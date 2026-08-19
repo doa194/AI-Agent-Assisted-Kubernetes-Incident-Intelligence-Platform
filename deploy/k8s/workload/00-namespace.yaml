@@ -1,0 +1,12 @@
+# The namespace containing everything the platform observes.
+#
+# Keeping the demo workload in its own namespace is what makes the read-only
+# RBAC boundary meaningful: the platform's service account is granted read
+# access to this namespace and the observability namespace, and nothing else.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubesage-demo
+  labels:
+    app.kubernetes.io/part-of: kubesage
+    kubesage.io/purpose: observed-workload

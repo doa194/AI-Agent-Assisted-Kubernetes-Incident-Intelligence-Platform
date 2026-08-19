@@ -1,0 +1,132 @@
+# Workload database.
+#
+# This is the demo application's own database, entirely separate from the
+# incident database in the operations plane. Keeping them apart is important:
+# the "database unavailable" scenario takes THIS one down, and the platform
+# must still be able to record the incident it observes.
+#
+# Storage is an emptyDir rather than a persistent volume. Order history is
+# disposable demo data, and using ephemeral storage means scaling the
+# deployment to zero and back - which is exactly how the database-unavailable
+# scenario works - returns a clean, correctly initialised database every time.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: workload-db-init
+  namespace: kubesage-demo
+data:
+  01-schema.sql: |
+    -- Orders placed through the demo application.
+    CREATE TABLE IF NOT EXISTS orders (
+        order_id          text PRIMARY KEY,
+        customer_id       text NOT NULL,
+        amount            numeric(12,2) NOT NULL,
+        currency          text NOT NULL,
+        authorisation_id  text,
+        status            text NOT NULL,
+        created_at_utc    timestamptz NOT NULL
+    );
+
+    -- Work queue for the notification worker. A row is written in the same
+    -- transaction as its order, so the queue depth tracks real order traffic.
+    CREATE TABLE IF NOT EXISTS notifications (
+        id                bigserial PRIMARY KEY,
+        order_id          text NOT NULL REFERENCES orders(order_id),
+        channel           text NOT NULL,
+        status            text NOT NULL,
+        created_at_utc    timestamptz NOT NULL,
+        claimed_at_utc    timestamptz,
+        delivered_at_utc  timestamptz
+    );
+
+    -- The worker repeatedly asks for the oldest pending rows, so that lookup
+    -- gets its own index.
+    CREATE INDEX IF NOT EXISTS idx_notifications_pending
+        ON notifications (status, created_at_utc)
+        WHERE status = 'pending';
+
+    CREATE INDEX IF NOT EXISTS idx_orders_created
+        ON orders (created_at_utc DESC);
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: workload-db
+  namespace: kubesage-demo
+  labels:
+    app.kubernetes.io/name: workload-db
+    app.kubernetes.io/part-of: kubesage
+spec:
+  selector:
+    app.kubernetes.io/name: workload-db
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workload-db
+  namespace: kubesage-demo
+  labels:
+    app.kubernetes.io/name: workload-db
+    app.kubernetes.io/part-of: kubesage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: workload-db
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: workload-db
+        app.kubernetes.io/part-of: kubesage
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:18.2-trixie
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: workload
+            - name: POSTGRES_USER
+              value: workload
+            - name: POSTGRES_PASSWORD
+              value: workload_local_dev
+            - name: PGDATA
+              # PostgreSQL 18 images place data in a version-specific
+              # subdirectory of the mounted volume.
+              value: /var/lib/postgresql/18/docker
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 50m
+            limits:
+              memory: 256Mi
+              cpu: 500m
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "workload", "-d", "workload"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "workload", "-d", "workload"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 6
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: init
+          configMap:
+            name: workload-db-init

@@ -1,0 +1,109 @@
+# notification-worker
+#
+# Background processor. Can look perfectly healthy to Kubernetes while
+# doing no useful work, which is a failure mode no HTTP service shows.
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-worker
+  namespace: kubesage-demo
+  labels:
+    app.kubernetes.io/name: notification-worker
+    app.kubernetes.io/part-of: kubesage
+spec:
+  selector:
+    app.kubernetes.io/name: notification-worker
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-worker
+  namespace: kubesage-demo
+  labels:
+    app.kubernetes.io/name: notification-worker
+    app.kubernetes.io/part-of: kubesage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: notification-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: notification-worker
+        app.kubernetes.io/part-of: kubesage
+      annotations:
+        # Tells Prometheus to scrape this pod. Discovery is annotation-driven
+        # so adding a service needs no Prometheus configuration change.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      # Spread replicas across nodes where possible, so a single node problem
+      # does not take out every replica of a service at once.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: notification-worker
+      containers:
+        - name: notification-worker
+          image: kubesage/notification-worker:local
+          # The image is loaded straight into the Kind nodes, so Kubernetes
+          # must not try to fetch it from a registry.
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: ASPNETCORE_HTTP_PORTS
+              value: "8080"
+            # Workstation garbage collection keeps memory use well below the
+            # container limit. Server GC would reserve far more per core and
+            # make these small limits unworkable.
+            - name: DOTNET_gcServer
+              value: "0"
+            - name: ConnectionStrings__WorkloadDatabase
+              value: "Host=workload-db;Port=5432;Database=workload;Username=workload;Password=workload_local_dev;Timeout=3;Command Timeout=5"
+          resources:
+            requests:
+              memory: 96Mi
+              cpu: 50m
+            limits:
+              memory: 192Mi
+              cpu: 500m
+          # Liveness stays healthy while a readiness fault is active. The
+          # readiness-failure scenario is about being removed from the Service,
+          # not about being restarted, and conflating the two would destroy the
+          # evidence that makes the scenario distinguishable.
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault

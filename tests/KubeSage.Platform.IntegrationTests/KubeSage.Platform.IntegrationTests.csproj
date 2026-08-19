@@ -1,0 +1,22 @@
+<!--
+  Tests that need real infrastructure.
+
+  These run against a throwaway PostgreSQL container started by
+  Testcontainers, using the same pgvector image the platform ships with, so
+  what is verified here is the behaviour of the actual database rather than a
+  mock that agrees with our assumptions.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <PackageReference Include="Testcontainers.PostgreSql" />
+    <PackageReference Include="Npgsql" />
+    <PackageReference Include="Dapper" />
+    <PackageReference Include="Pgvector" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KubeSage.Platform\KubeSage.Platform.csproj" />
+  </ItemGroup>
+
+</Project>

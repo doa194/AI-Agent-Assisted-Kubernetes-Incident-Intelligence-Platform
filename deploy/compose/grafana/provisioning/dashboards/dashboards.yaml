@@ -1,0 +1,16 @@
+# Tells Grafana to load every dashboard JSON file mounted at
+# /var/lib/grafana/dashboards. Dashboards are kept in the repository as files
+# so they are version controlled rather than edited by hand in the UI.
+apiVersion: 1
+
+providers:
+  - name: KubeSage
+    orgId: 1
+    folder: KubeSage
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

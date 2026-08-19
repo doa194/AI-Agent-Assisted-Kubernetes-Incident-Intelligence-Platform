@@ -1,0 +1,20 @@
+# Optional GPU overlay for Ollama.
+#
+# This file is added to the compose command only when the Python automation
+# detects an NVIDIA GPU and the nvidia container runtime. It is kept separate
+# so that a machine without a GPU can still bring the platform up with the
+# base compose file, just with slower model inference on the CPU.
+#
+# On a small card the whole model will not fit in video memory. Ollama splits
+# the model automatically, keeping as many layers on the GPU as fit and
+# running the rest on the CPU.
+
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

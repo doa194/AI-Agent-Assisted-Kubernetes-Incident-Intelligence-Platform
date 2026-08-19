@@ -1,0 +1,59 @@
+<!--
+  The KubeSage platform: one deployable ASP.NET Core application containing
+  every module (detection, incidents, telemetry adapters, agent workflow,
+  retrieval, reporting, persistence and the operator API).
+
+  It is a modular monolith on purpose. The modules are separated by folder and
+  by narrow interfaces, not by process boundaries, because splitting this into
+  services would add deployment and debugging cost without solving a real
+  problem at this scale.
+-->
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <UserSecretsId>kubesage-platform</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup Label="AI">
+    <PackageReference Include="Microsoft.Agents.AI" />
+    <PackageReference Include="Microsoft.Agents.AI.Workflows" />
+    <PackageReference Include="Microsoft.Extensions.AI" />
+    <PackageReference Include="OllamaSharp" />
+  </ItemGroup>
+
+  <ItemGroup Label="Data">
+    <PackageReference Include="Npgsql" />
+    <PackageReference Include="Pgvector" />
+    <PackageReference Include="Dapper" />
+  </ItemGroup>
+
+  <ItemGroup Label="Infrastructure">
+    <PackageReference Include="KubernetesClient" />
+    <PackageReference Include="Microsoft.Extensions.Http.Resilience" />
+  </ItemGroup>
+
+  <ItemGroup Label="Schema">
+    <!--
+      Migration scripts ship inside the assembly. Embedding them means the
+      container image can never drift out of sync with the code that expects
+      those tables to exist.
+    -->
+    <EmbeddedResource Include="Modules\Persistence\Migrations\*.sql" />
+  </ItemGroup>
+
+  <ItemGroup Label="Knowledge">
+    <!--
+      The curated runbook corpus is embedded for the same reason: the
+      knowledge the Investigation Agent can retrieve is part of the build,
+      not something that has to be copied onto the machine separately.
+    -->
+    <EmbeddedResource Include="..\..\knowledge\runbooks\*.md" LinkBase="Knowledge\Runbooks" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="KubeSage.Platform.UnitTests" />
+    <InternalsVisibleTo Include="KubeSage.Platform.IntegrationTests" />
+    <InternalsVisibleTo Include="KubeSage.Platform.ApiTests" />
+  </ItemGroup>
+
+</Project>

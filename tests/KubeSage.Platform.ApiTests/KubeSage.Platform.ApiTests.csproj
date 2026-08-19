@@ -1,0 +1,25 @@
+<!--
+  Component tests for the operator API.
+//
+  These start the real application in memory with WebApplicationFactory,
+  against a throwaway PostgreSQL container, and exercise the HTTP surface an
+  operator and the automation actually depend on.
+
+  The background loops (detection, dispatcher, indexing) are switched off for
+  these tests so behaviour is deterministic - a detection pass firing mid-test
+  would make assertions about incident counts flaky.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <PackageReference Include="Testcontainers.PostgreSql" />
+    <PackageReference Include="Npgsql" />
+    <PackageReference Include="Dapper" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KubeSage.Platform\KubeSage.Platform.csproj" />
+  </ItemGroup>
+
+</Project>

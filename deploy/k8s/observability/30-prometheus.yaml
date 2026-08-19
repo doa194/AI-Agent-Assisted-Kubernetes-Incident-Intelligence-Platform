@@ -1,0 +1,221 @@
+# Prometheus: the metric store.
+#
+# Discovery is annotation-driven: any pod carrying prometheus.io/scrape=true
+# is scraped automatically. That means adding a service to the demo workload
+# needs no change here, and it is why every workload deployment carries those
+# annotations.
+#
+# Metrics stay in Prometheus. The AI platform queries it during an
+# investigation and never copies the raw samples anywhere else.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: kubesage-observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubesage-prometheus
+rules:
+  # Read-only. Prometheus needs to see pods and endpoints to know what to
+  # scrape; it never modifies anything.
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/metrics", "services", "endpoints", "pods"]
+    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/metrics", "/metrics/cadvisor"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubesage-prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubesage-prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: kubesage-observability
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: kubesage-observability
+data:
+  prometheus.yml: |
+    global:
+      # Fifteen seconds gives detection rules several data points inside a
+      # one minute window without generating much data.
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      external_labels:
+        cluster: kubesage
+
+    scrape_configs:
+      # --- Application pods, discovered by annotation ---
+      - job_name: kubesage-pods
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          # Only scrape pods that asked to be scraped.
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          # Rewrite the scrape address to the annotated port.
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          # Promote the Kubernetes identity onto every sample. These are the
+          # labels detection rules and investigation queries filter on, so
+          # they must be present and named consistently.
+          - source_labels: [__meta_kubernetes_namespace]
+            action: replace
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            action: replace
+            target_label: workload
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            action: replace
+            target_label: node
+
+      # --- Kubernetes node and container metrics from the kubelet ---
+      # Provides container_memory_* and container_cpu_*, which is what makes
+      # a memory problem visible as a metric and not only as a pod event.
+      - job_name: kubernetes-cadvisor
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          # The kubelet serving certificate in a Kind cluster is self-signed
+          # for the node's internal name. Verifying it would need certificate
+          # plumbing that adds nothing in a local lab.
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
+        metric_relabel_configs:
+          # cAdvisor exposes a very large number of series. Only the ones an
+          # investigation actually uses are kept, which keeps Prometheus's
+          # memory use inside its container limit.
+          - source_labels: [__name__]
+            action: keep
+            regex: "container_memory_working_set_bytes|container_cpu_usage_seconds_total|container_spec_memory_limit_bytes|container_last_seen"
+          - source_labels: [container]
+            action: drop
+            regex: "^$"
+
+      - job_name: prometheus
+        static_configs:
+          - targets: ["localhost:9090"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: kubesage-observability
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: kubesage
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+      # Published to the host so the AI platform and Grafana can query it
+      # from outside the cluster.
+      nodePort: 30090
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: kubesage-observability
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: kubesage
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: prometheus
+        app.kubernetes.io/part-of: kubesage
+    spec:
+      serviceAccountName: prometheus
+      securityContext:
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.13.2
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            # Six hours is plenty: investigations look at minutes, and a
+            # short retention keeps memory and disk small.
+            - --storage.tsdb.retention.time=6h
+            - --web.enable-lifecycle
+          ports:
+            - name: http
+              containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: data
+              mountPath: /prometheus
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            limits:
+              memory: 640Mi
+              cpu: 1000m
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 6
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: data
+          emptyDir: {}

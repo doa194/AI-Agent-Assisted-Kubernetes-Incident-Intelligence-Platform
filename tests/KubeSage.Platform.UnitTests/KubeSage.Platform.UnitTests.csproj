@@ -1,0 +1,14 @@
+<!--
+  Fast tests for pure logic: configuration validation, detection rules,
+  fingerprinting, state transitions, redaction and agent output contracts.
+
+  Nothing in this project may touch a database, a container, the network or
+  a model. Those belong in the integration test project.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KubeSage.Platform\KubeSage.Platform.csproj" />
+  </ItemGroup>
+
+</Project>

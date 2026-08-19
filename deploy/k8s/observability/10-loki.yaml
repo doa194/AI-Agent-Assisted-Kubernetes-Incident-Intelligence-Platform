@@ -1,0 +1,181 @@
+# Loki: the log store.
+#
+# Run as a single process with filesystem storage. That is the right choice
+# here because this is a local development cluster where operational
+# simplicity matters far more than horizontal scale, and because a single
+# binary has one failure mode instead of six.
+#
+# Raw log lines stay HERE. They are never copied into the incident database.
+# The AI platform queries Loki only when an investigation actually needs a
+# specific slice of logs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-config
+  namespace: kubesage-observability
+data:
+  loki.yaml: |
+    auth_enabled: false
+
+    server:
+      http_listen_port: 3100
+      grpc_listen_port: 9096
+      # Log at warn so Loki's own chatter does not compete for the small
+      # amount of memory this cluster has.
+      log_level: warn
+
+    common:
+      instance_addr: 127.0.0.1
+      path_prefix: /loki
+      storage:
+        filesystem:
+          chunks_directory: /loki/chunks
+          rules_directory: /loki/rules
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+
+    schema_config:
+      configs:
+        - from: 2024-01-01
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+
+    limits_config:
+      # Container clocks and the kubelet's timestamps can disagree slightly.
+      # Rejecting "too old" or "too new" lines would silently drop evidence
+      # right when an incident is being investigated, so both windows are
+      # generous.
+      reject_old_samples: false
+      max_query_lookback: 168h
+      # An investigation asks for a bounded slice of logs; these ceilings stop
+      # a mistaken query from trying to load everything at once.
+      max_entries_limit_per_query: 5000
+      max_query_series: 500
+      volume_enabled: true
+      allow_structured_metadata: true
+      # Loki 3.x otherwise invents a "service_name" label by guessing from the
+      # record. That guess duplicates the container label this project already
+      # sets deliberately, and an unpredictable extra label makes the stored
+      # streams harder to reason about. Turning discovery off keeps the label
+      # set exactly what Fluent Bit was configured to send.
+      discover_service_name: []
+      # Same reasoning for log levels: Fluent Bit already sends a "level"
+      # label taken from the application's own JSON, which is accurate.
+      # Loki's guess would add a second, sometimes disagreeing label.
+      discover_log_levels: false
+      # Keeping seven days is far more than any investigation needs and keeps
+      # disk use predictable on a laptop.
+      retention_period: 168h
+
+    compactor:
+      working_directory: /loki/compactor
+      retention_enabled: true
+      delete_request_store: filesystem
+
+    ruler:
+      storage:
+        type: local
+        local:
+          directory: /loki/rules
+
+    analytics:
+      reporting_enabled: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: kubesage-observability
+  labels:
+    app.kubernetes.io/name: loki
+    app.kubernetes.io/part-of: kubesage
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: loki
+  ports:
+    - name: http
+      port: 3100
+      targetPort: http
+      # Published to the host through the Kind port mapping. This is how the
+      # AI platform and Grafana, both of which run outside the cluster, reach
+      # Loki without ever using a node IP address.
+      nodePort: 30100
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+  namespace: kubesage-observability
+  labels:
+    app.kubernetes.io/name: loki
+    app.kubernetes.io/part-of: kubesage
+spec:
+  replicas: 1
+  strategy:
+    # The log store owns a filesystem directory, so two instances must never
+    # run at once during a rollout.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: loki
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: loki
+        app.kubernetes.io/part-of: kubesage
+    spec:
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: loki
+          image: grafana/loki:3.7.6
+          args:
+            - -config.file=/etc/loki/loki.yaml
+          ports:
+            - name: http
+              containerPort: 3100
+            - name: grpc
+              containerPort: 9096
+          volumeMounts:
+            - name: config
+              mountPath: /etc/loki
+            - name: data
+              mountPath: /loki
+          resources:
+            requests:
+              memory: 192Mi
+              cpu: 100m
+            limits:
+              memory: 448Mi
+              cpu: 1000m
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 6
+      volumes:
+        - name: config
+          configMap:
+            name: loki-config
+        - name: data
+          # Logs are disposable in a local lab, and ephemeral storage keeps
+          # the cluster free of persistent volume plumbing.
+          emptyDir: {}

@@ -1,0 +1,77 @@
+<!--
+  Central package version management for the whole solution.
+
+  Why this file exists:
+  every project references packages WITHOUT a version number, and the single
+  pinned version is declared here. This keeps the AI platform, the demo
+  workload services and the tests on exactly one version of each library, and
+  makes an upgrade a one-line change in one place.
+
+  All versions are pinned exactly. Floating versions (for example "10.*") are
+  deliberately avoided so that a rebuild months from now produces the same
+  binaries as today.
+-->
+<Project>
+
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+
+  <!--
+    AI layer.
+
+    Microsoft Agent Framework (Microsoft.Agents.AI*) supplies the agents and the
+    deterministic workflow engine. These are stable releases, not previews.
+
+    Note there is no official Ollama package for the Agent Framework. We reach
+    Ollama through OllamaSharp, which implements the Microsoft.Extensions.AI
+    IChatClient / IEmbeddingGenerator interfaces that the Agent Framework
+    consumes. The deprecated Microsoft.Extensions.AI.Ollama preview package is
+    intentionally NOT used.
+  -->
+  <ItemGroup Label="AI">
+    <PackageVersion Include="Microsoft.Agents.AI" Version="1.17.0" />
+    <PackageVersion Include="Microsoft.Agents.AI.Abstractions" Version="1.17.0" />
+    <PackageVersion Include="Microsoft.Agents.AI.Workflows" Version="1.17.0" />
+    <PackageVersion Include="Microsoft.Extensions.AI" Version="10.9.0" />
+    <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.9.0" />
+    <PackageVersion Include="OllamaSharp" Version="5.4.30" />
+  </ItemGroup>
+
+  <!--
+    Data layer. Npgsql talks to PostgreSQL, Pgvector adds the vector column
+    type used by semantic incident memory, Dapper removes hand-written
+    row-to-object mapping code.
+  -->
+  <ItemGroup Label="Data">
+    <PackageVersion Include="Npgsql" Version="10.0.3" />
+    <PackageVersion Include="Pgvector" Version="0.3.2" />
+    <PackageVersion Include="Dapper" Version="2.1.79" />
+  </ItemGroup>
+
+  <!-- Kubernetes API access. Read-only usage is enforced by RBAC, not by this client. -->
+  <ItemGroup Label="Kubernetes">
+    <PackageVersion Include="KubernetesClient" Version="19.0.2" />
+  </ItemGroup>
+
+  <ItemGroup Label="Platform">
+    <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="10.9.0" />
+    <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="10.0.11" />
+  </ItemGroup>
+
+  <!-- Demo workload services expose Prometheus metrics with this client. -->
+  <ItemGroup Label="Workload">
+    <PackageVersion Include="prometheus-net.AspNetCore" Version="8.2.1" />
+  </ItemGroup>
+
+  <ItemGroup Label="Testing">
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
+    <PackageVersion Include="xunit.v3" Version="3.2.2" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+    <PackageVersion Include="Shouldly" Version="4.3.0" />
+    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.11" />
+    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.14.0" />
+  </ItemGroup>
+
+</Project>

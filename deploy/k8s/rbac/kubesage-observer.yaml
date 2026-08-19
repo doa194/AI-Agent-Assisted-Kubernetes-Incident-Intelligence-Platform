@@ -1,0 +1,153 @@
+# The identity the AI platform uses to read the cluster.
+#
+# This is the security boundary of the whole project. The platform is an
+# OBSERVER: it may look at anything it needs to explain an incident, and it
+# may change nothing at all.
+#
+# The boundary is enforced by Kubernetes RBAC, not by the application. That
+# distinction matters: even if an agent were manipulated into trying to delete
+# a deployment - by text hidden in a log line it was reading, for example -
+# the API server would refuse, because this identity has no verb that could
+# perform it.
+#
+# Note what is NOT granted:
+#   * no create, update, patch, delete or deletecollection, anywhere;
+#   * no access to Secrets, so credentials cannot be read even accidentally;
+#   * no pods/exec or pods/attach, so no shell inside a container;
+#   * no pods/portforward, so no tunnelling to internal services;
+#   * no cluster-wide read of arbitrary namespaces - access is granted
+#     per namespace with RoleBindings, not a ClusterRoleBinding.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubesage-observer
+  namespace: kubesage-observability
+  labels:
+    app.kubernetes.io/part-of: kubesage
+---
+# A ClusterRole is used only so the same definition can be bound into several
+# namespaces. Binding it with RoleBindings, not a ClusterRoleBinding, is what
+# keeps the access namespace-scoped.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubesage-observer
+  labels:
+    app.kubernetes.io/part-of: kubesage
+rules:
+  # Core workload state: what is running, is it healthy, has it restarted.
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/status
+      - services
+      - endpoints
+      - events
+      - configmaps
+      - persistentvolumeclaims
+      - replicationcontrollers
+    verbs: ["get", "list", "watch"]
+
+  # Container logs. Read-only, and always requested with an explicit line and
+  # time limit by the platform's Kubernetes adapter.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+
+  # Controller state: desired versus actual replicas, rollout history.
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - deployments/status
+      - replicasets
+      - replicasets/status
+      - statefulsets
+      - statefulsets/status
+      - daemonsets
+      - daemonsets/status
+    verbs: ["get", "list", "watch"]
+
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+
+  # The newer events API, which is where recent events actually appear.
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+---
+# Node and namespace information is genuinely cluster-scoped: an investigation
+# needs to know which node a pod was on and whether that node was under
+# pressure. Still read-only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubesage-observer-cluster
+  labels:
+    app.kubernetes.io/part-of: kubesage
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/status", "namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubesage-observer-cluster
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubesage-observer-cluster
+subjects:
+  - kind: ServiceAccount
+    name: kubesage-observer
+    namespace: kubesage-observability
+---
+# Namespace-scoped read access, granted once per namespace the platform is
+# allowed to observe. Adding a namespace here is a deliberate act.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubesage-observer
+  namespace: kubesage-demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubesage-observer
+subjects:
+  - kind: ServiceAccount
+    name: kubesage-observer
+    namespace: kubesage-observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubesage-observer
+  namespace: kubesage-observability
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubesage-observer
+subjects:
+  - kind: ServiceAccount
+    name: kubesage-observer
+    namespace: kubesage-observability
+---
+# A long-lived token for the service account.
+#
+# The platform runs outside the cluster, so it cannot use a projected token
+# mounted into a pod. This Secret gives it a credential it can present over
+# the network. The bootstrap automation reads it once, writes a kubeconfig,
+# and mounts that kubeconfig read-only into the platform container.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kubesage-observer-token
+  namespace: kubesage-observability
+  annotations:
+    kubernetes.io/service-account.name: kubesage-observer
+type: kubernetes.io/service-account-token

@@ -1,0 +1,225 @@
+# Fluent Bit: collects container logs from every node and ships them to Loki.
+#
+# Runs as a DaemonSet so there is exactly one collector per node reading that
+# node's container log files. This is the standard pattern and it means a pod
+# is collected no matter where the scheduler put it.
+#
+# The most important decision in this file is which fields become Loki
+# LABELS. Loki builds an index entry for every distinct combination of label
+# values, so a label with many possible values (a correlation identifier, an
+# order identifier, a pod name that changes on every restart) makes queries
+# slow and the index enormous. Only three low-cardinality labels are used
+# here; everything else stays inside the log line, where it is still fully
+# searchable but costs nothing to index.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluent-bit
+  namespace: kubesage-observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubesage-fluent-bit
+rules:
+  # Read-only, and only what the kubernetes filter needs to attach pod
+  # metadata to a log line.
+  - apiGroups: [""]
+    resources: ["pods", "namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubesage-fluent-bit
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubesage-fluent-bit
+subjects:
+  - kind: ServiceAccount
+    name: fluent-bit
+    namespace: kubesage-observability
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-config
+  namespace: kubesage-observability
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush             2
+        Daemon            Off
+        Log_Level         warn
+        Parsers_File      parsers.conf
+        HTTP_Server       On
+        HTTP_Listen       0.0.0.0
+        HTTP_Port         2020
+        # Position tracking survives a Fluent Bit restart, so logs are not
+        # re-sent (which would create duplicate evidence) or skipped.
+        storage.path      /var/log/flb-storage/
+        storage.sync      normal
+        storage.backlog.mem_limit 16M
+
+    [INPUT]
+        Name              tail
+        Tag               kube.*
+        Path              /var/log/containers/*.log
+        # Never collect our own output: Fluent Bit logging about shipping logs
+        # would feed itself forever.
+        Exclude_Path      /var/log/containers/*fluent-bit*.log
+        # containerd writes the CRI line format, not raw JSON.
+        multiline.parser  cri
+        DB                /var/log/flb-storage/tail.db
+        Mem_Buf_Limit     16MB
+        Skip_Long_Lines   On
+        Refresh_Interval  5
+
+    [FILTER]
+        Name                kubernetes
+        Match               kube.*
+        Kube_Tag_Prefix     kube.var.log.containers.
+        Merge_Log           Off
+        Keep_Log            On
+        # Pod annotations and labels are deliberately NOT attached. They are
+        # large, repeated on every single line, and nothing downstream reads
+        # them - the container name already identifies the service.
+        Annotations         Off
+        Labels              Off
+        K8S-Logging.Parser  Off
+        K8S-Logging.Exclude Off
+
+    [FILTER]
+        # The demo services log JSON. Parsing it here promotes fields such as
+        # level, service, operation, durationMs and correlationId to real
+        # fields, which is what makes precise LogQL queries possible later.
+        #
+        # Reserve_Data keeps the Kubernetes metadata that the previous filter
+        # added, and lines that are not JSON (PostgreSQL, for example) simply
+        # pass through unchanged.
+        Name                parser
+        Match               kube.*
+        Key_Name            log
+        Parser              workload_json
+        Reserve_Data        On
+        Preserve_Key        Off
+
+    [FILTER]
+        # Flatten the nested "kubernetes" object to top level.
+        #
+        # The Loki output plugin names a label after the full record path it
+        # came from, so using a nested accessor directly would produce a label
+        # called kubernetes_container_name. Flattening first, then renaming
+        # below, is what gives the short label names the platform's LogQL
+        # queries are written against.
+        Name                nest
+        Match               kube.*
+        Operation           lift
+        Nested_under        kubernetes
+        Add_prefix          k8s_
+
+    [FILTER]
+        Name                modify
+        Match               kube.*
+        Rename              k8s_namespace_name namespace
+        Rename              k8s_container_name container
+        Rename              k8s_pod_name pod_name
+        # The rest of the Kubernetes metadata is repeated on every single line
+        # and nothing downstream reads it, so it is dropped to keep stored
+        # lines small.
+        Remove              k8s_host
+        Remove              k8s_docker_id
+        Remove              k8s_container_hash
+        Remove              k8s_container_image
+        Remove              k8s_pod_id
+
+    [OUTPUT]
+        Name                loki
+        Match               kube.*
+        Host                loki.kubesage-observability.svc.cluster.local
+        Port                3100
+        # Three labels only. namespace and container are always present and
+        # have a handful of values each; level has five. Everything else -
+        # correlation identifiers, pod names, order identifiers, durations -
+        # remains inside the JSON line.
+        labels              job=kubesage
+        label_keys          $namespace,$container,$level
+        # The whole record is stored as JSON so every field stays queryable
+        # with LogQL's json parser.
+        line_format         json
+        auto_kubernetes_labels off
+        Retry_Limit         5
+
+  parsers.conf: |
+    [PARSER]
+        Name        workload_json
+        Format      json
+        # Matches the "ts" field written by WorkloadLogFormatter.
+        Time_Key    ts
+        Time_Format %Y-%m-%dT%H:%M:%S.%L%z
+        Time_Keep   On
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluent-bit
+  namespace: kubesage-observability
+  labels:
+    app.kubernetes.io/name: fluent-bit
+    app.kubernetes.io/part-of: kubesage
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fluent-bit
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fluent-bit
+        app.kubernetes.io/part-of: kubesage
+    spec:
+      serviceAccountName: fluent-bit
+      # Must also run on the control plane node, which hosts Loki and
+      # Prometheus; without this their own logs would never be collected.
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: fluent-bit
+          image: fluent/fluent-bit:4.2.8
+          ports:
+            - name: http
+              containerPort: 2020
+          volumeMounts:
+            - name: config
+              mountPath: /fluent-bit/etc/fluent-bit.conf
+              subPath: fluent-bit.conf
+            - name: config
+              mountPath: /fluent-bit/etc/parsers.conf
+              subPath: parsers.conf
+            # Files in /var/log/containers are symlinks into /var/log/pods,
+            # so mounting /var/log alone covers both. Kind uses containerd,
+            # not Docker, so there is no /var/lib/docker to mount.
+            - name: varlog
+              mountPath: /var/log
+          resources:
+            requests:
+              memory: 48Mi
+              cpu: 25m
+            limits:
+              memory: 128Mi
+              cpu: 200m
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: fluent-bit-config
+        - name: varlog
+          hostPath:
+            path: /var/log

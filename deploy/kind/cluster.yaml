@@ -1,0 +1,85 @@
+# Three-node Kind cluster that hosts the observed workload plane.
+#
+# Why three nodes: one control plane and two workers means pods actually get
+# scheduled across machines, so pod eviction, restarts and node-level events
+# look like a real cluster rather than a single-node toy.
+#
+# How the outside world gets in:
+# the KubeSage platform runs in Docker Compose, OUTSIDE this cluster. It never
+# talks to Kind node IP addresses, because those change on every recreate and
+# are not routable in a predictable way. Instead every service the platform
+# needs is published on a fixed host port through extraPortMappings below, and
+# the platform reaches them at host.docker.internal:<port>.
+#
+# The node image is substituted by the Python automation from versions.env.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: kubesage
+
+networking:
+  # Fixed API server port so the generated kubeconfig is stable across
+  # recreates and can be rewritten for in-container use deterministically.
+  apiServerAddress: "127.0.0.1"
+  apiServerPort: 6443
+  # Explicit subnets keep the cluster away from common home/VPN ranges.
+  podSubnet: "10.244.0.0/16"
+  serviceSubnet: "10.96.0.0/16"
+
+nodes:
+  - role: control-plane
+    image: KIND_NODE_IMAGE_PLACEHOLDER
+    kubeadmConfigPatches:
+      # The API server certificate must also be valid for the name that
+      # containers in the operations plane use. Without this extra SAN the
+      # .NET Kubernetes client would reject the TLS certificate when it
+      # connects through host.docker.internal.
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          certSANs:
+            - localhost
+            - 127.0.0.1
+            - host.docker.internal
+            - kubesage-control-plane
+      # Label the control plane so the observability stack can be pinned to a
+      # predictable node.
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "kubesage.io/role=platform"
+    extraPortMappings:
+      # Loki query API, consumed by the platform's Loki adapter and by Grafana.
+      - containerPort: 30100
+        hostPort: 3100
+        listenAddress: "0.0.0.0"
+        protocol: TCP
+      # Prometheus query API, consumed by the platform's metrics adapter.
+      - containerPort: 30090
+        hostPort: 9090
+        listenAddress: "0.0.0.0"
+        protocol: TCP
+      # Demo application entry point. Published mainly so a human can verify
+      # by hand that the workload really is serving traffic.
+      - containerPort: 30080
+        hostPort: 8080
+        listenAddress: "0.0.0.0"
+        protocol: TCP
+
+  - role: worker
+    image: KIND_NODE_IMAGE_PLACEHOLDER
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "kubesage.io/role=workload"
+
+  - role: worker
+    image: KIND_NODE_IMAGE_PLACEHOLDER
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "kubesage.io/role=workload"

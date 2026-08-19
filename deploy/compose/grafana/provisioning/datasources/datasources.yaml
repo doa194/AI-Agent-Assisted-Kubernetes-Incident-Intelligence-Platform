@@ -1,0 +1,29 @@
+# Grafana datasources, provisioned automatically at container start.
+#
+# Grafana points at exactly the same Loki and Prometheus endpoints the AI
+# platform queries. That is the whole point: a person can open Grafana and
+# re-check any piece of evidence an agent cited, using the same source data.
+#
+# The URLs come from environment variables set in docker-compose.yml, which in
+# turn come from versions.env, so a port is defined in only one place.
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    type: loki
+    access: proxy
+    uid: kubesage-loki
+    url: ${LOKI_URL}
+    isDefault: false
+    jsonData:
+      maxLines: 2000
+
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    uid: kubesage-prometheus
+    url: ${PROMETHEUS_URL}
+    isDefault: true
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s

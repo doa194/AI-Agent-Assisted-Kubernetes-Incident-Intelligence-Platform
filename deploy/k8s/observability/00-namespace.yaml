@@ -1,0 +1,12 @@
+# Namespace for the in-cluster telemetry systems.
+#
+# Loki, Prometheus and Fluent Bit live here rather than alongside the demo
+# workload, so a failure scenario aimed at the workload namespace cannot
+# accidentally take down the very systems that are supposed to record it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubesage-observability
+  labels:
+    app.kubernetes.io/part-of: kubesage
+    kubesage.io/purpose: telemetry

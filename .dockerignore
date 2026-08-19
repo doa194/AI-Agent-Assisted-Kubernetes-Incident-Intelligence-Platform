@@ -1,0 +1,29 @@
+# Keeps host build output out of the Docker build context.
+#
+# This is not only about image size. A Windows obj/ directory contains a
+# project.assets.json that points at Windows-only NuGet fallback folders. If it
+# is copied into the container it overwrites the restore that just happened
+# inside the image, and the build fails with a confusing
+# "Unable to find fallback package folder 'C:\...'" error.
+**/bin/
+**/obj/
+**/out/
+
+# Local environment and generated artefacts
+.kubesage-build/
+deploy/compose/generated/
+**/.vs/
+**/.vscode/
+**/.idea/
+**/*.user
+
+# Version control and docs are not needed to compile
+.git/
+.gitignore
+.gitattributes
+docs/
+**/*.md
+!knowledge/runbooks/*.md
+
+# Test projects are built and run on the host, not inside the runtime image
+tests/

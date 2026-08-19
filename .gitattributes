@@ -1,0 +1,14 @@
+# Shell scripts and Kubernetes/Compose YAML are consumed inside Linux
+# containers. A Windows checkout must not rewrite them with CRLF endings,
+# because bash refuses to run a script whose shebang line ends in \r.
+* text=auto eol=lf
+
+*.sh      text eol=lf
+*.yaml    text eol=lf
+*.yml     text eol=lf
+Dockerfile text eol=lf
+*.conf    text eol=lf
+
+*.png     binary
+*.jpg     binary
+*.ico     binary

@@ -1,0 +1,26 @@
+<!--
+  Code shared by every demo service: log format, correlation propagation,
+  fault injection, metrics and health endpoints.
+
+  This library is what guarantees the workload produces ONE consistent shape
+  of telemetry. The detection rules in the AI platform depend on that
+  consistency, so behaviour that affects log fields or metric names belongs
+  here rather than in an individual service.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Required by the memory-exhaustion fault, which writes to unmanaged
+         memory to force a real container OOM kill. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="prometheus-net.AspNetCore" />
+  </ItemGroup>
+
+</Project>

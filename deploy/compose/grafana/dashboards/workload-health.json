@@ -1,0 +1,111 @@
+{
+  "//": "Workload health. Exists so a person can check the same signals the detection rules evaluate and the agents cite, using the same Loki and Prometheus data, without taking the platform's word for anything.",
+  "uid": "kubesage-workload",
+  "title": "KubeSage - Workload health",
+  "tags": ["kubesage"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Server error rate by service (the http_error_rate rule reads this)",
+      "description": "Fraction of requests answered with 5xx. The detection rule fires above 10% with at least 20 requests in the window.",
+      "datasource": { "type": "prometheus", "uid": "kubesage-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "custom": { "fillOpacity": 10 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.1 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service) (increase(kubesage_http_requests_total{status_class=\"5xx\"}[5m])) / clamp_min(sum by (service) (increase(kubesage_http_requests_total[5m])), 1)",
+          "legendFormat": "{{service}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Dependency latency, 95th percentile",
+      "description": "The single most useful panel for telling a slow dependency apart from a broken service. During the payment-latency scenario one dependency rises sharply while the others stay flat.",
+      "datasource": { "type": "prometheus", "uid": "kubesage-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "min": 0, "custom": { "fillOpacity": 5 } }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (service, dependency, le) (rate(kubesage_dependency_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{service}} -> {{dependency}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Dependency failures by kind",
+      "description": "Separates a timeout from a refused connection. A timeout points at something slow; a connection failure points at something absent.",
+      "datasource": { "type": "prometheus", "uid": "kubesage-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "min": 0, "custom": { "fillOpacity": 20 } } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service, dependency, kind) (increase(kubesage_dependency_failures_total[5m]))",
+          "legendFormat": "{{service}} -> {{dependency}} ({{kind}})"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Container memory against its limit",
+      "description": "Where an OOMKilled becomes explicable: working set converging on the limit just before termination.",
+      "datasource": { "type": "prometheus", "uid": "kubesage-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "bytes", "min": 0 } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "container_memory_working_set_bytes{namespace=\"kubesage-demo\"}",
+          "legendFormat": "{{pod}} used"
+        },
+        {
+          "refId": "B",
+          "expr": "container_spec_memory_limit_bytes{namespace=\"kubesage-demo\"} > 0",
+          "legendFormat": "{{pod}} limit"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "logs",
+      "title": "Errors and warnings across the workload",
+      "description": "The same Loki stream the platform queries. Any evidence id in a report can be traced back to a line here.",
+      "datasource": { "type": "loki", "uid": "kubesage-loki" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 16 },
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{namespace=\"kubesage-demo\"} | json | level =~ \"error|warn\""
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "sdk": {
+    "version": "10.0.303",
+    "//": "latestFeature lets a newer .NET 10 SDK feature band satisfy this, which is what makes the same repository build both on a developer machine and inside the pinned SDK container image. latestPatch would reject the container's SDK because it sits in a different feature band.",
+    "rollForward": "latestFeature"
+  }
+}

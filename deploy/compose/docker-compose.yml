@@ -1,0 +1,203 @@
+# External operations plane.
+#
+# Everything here runs OUTSIDE the Kubernetes cluster that is being observed.
+# That separation is deliberate: an incident that takes down the cluster must
+# not also take down the system that is supposed to explain the incident.
+#
+# Reaching into the cluster:
+# services here use host.docker.internal:<port>, where <port> is one of the
+# fixed host ports published by deploy/kind/cluster.yaml. No Kind node IP
+# address is ever referenced.
+#
+# Run this through the Python automation (`python -m kubesage start`) rather
+# than directly, because the automation supplies --env-file versions.env and
+# adds the GPU override file when a supported GPU is present.
+
+name: kubesage
+
+services:
+
+  # ---------------------------------------------------------------------
+  # Incident database: relational incident records AND their embeddings.
+  # Keeping both in one PostgreSQL instance means a similarity search can be
+  # filtered by ordinary SQL columns (service, incident type, time) in the
+  # same query, with no second datastore to keep in sync.
+  # ---------------------------------------------------------------------
+  postgres:
+    image: ${POSTGRES_IMAGE}
+    container_name: kubesage-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kubesage
+      POSTGRES_USER: kubesage_owner
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kubesage_local_dev}
+      # Least-privilege application role, created by the init script. The
+      # platform connects as this role and cannot alter the schema.
+      KUBESAGE_APP_PASSWORD: ${KUBESAGE_APP_PASSWORD:-kubesage_app_local_dev}
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    ports:
+      # 5433 on the host, not 5432, so a PostgreSQL already installed locally
+      # does not collide with this one.
+      - "${POSTGRES_HOST_PORT}:5432"
+    volumes:
+      # PostgreSQL 18 images store data in a version-specific subdirectory of
+      # /var/lib/postgresql. Mounting the parent directory (rather than the
+      # /var/lib/postgresql/data path used by PostgreSQL 17 and earlier) is
+      # required by these images and is what makes future pg_upgrade possible.
+      - postgres-data:/var/lib/postgresql
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kubesage_owner -d kubesage"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ---------------------------------------------------------------------
+  # Local model server. Hosts the reasoning model used by the three agents
+  # and the embedding model used by semantic incident memory.
+  #
+  # The environment below is tuned for a memory-constrained developer machine:
+  # one request at a time, and the chat model held in memory between
+  # investigations because reloading several gigabytes per incident would
+  # dominate the total investigation time.
+  # ---------------------------------------------------------------------
+  ollama:
+    image: ${OLLAMA_IMAGE}
+    container_name: kubesage-ollama
+    restart: unless-stopped
+    environment:
+      OLLAMA_HOST: "0.0.0.0:11434"
+      # ONE model resident at a time.
+      #
+      # Counter-intuitive but measured: keeping the 681MB embedding model
+      # loaded alongside the 8.1GB chat model on a 6GB card pushes chat layers
+      # off the GPU, and prompt processing collapsed to 14 tokens/sec - slow
+      # enough that a triage call exceeded a ten minute timeout.
+      #
+      # Reloading the chat model costs about 34 seconds once per investigation.
+      # Losing GPU residency costs several minutes on every single call.
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      # Serialise generation. Parallel requests to a 12B model on a small
+      # machine cause memory pressure and time-outs rather than throughput.
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_QUEUE: "64"
+      OLLAMA_KEEP_ALIVE: "30m"
+    ports:
+      - "${OLLAMA_HOST_PORT}:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      # The Ollama image is minimal, so the check is done with the bundled CLI
+      # rather than curl.
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          # Upper bound only. With GPU offload enabled most of the weights
+          # live in video memory and far less than this is actually used.
+          memory: 9G
+
+  # ---------------------------------------------------------------------
+  # The KubeSage modular monolith: detection, incident domain, agent
+  # workflow, retrieval and the operator API, in one deployable process.
+  # ---------------------------------------------------------------------
+  platform:
+    image: kubesage/platform:local
+    build:
+      context: ../..
+      dockerfile: src/KubeSage.Platform/Dockerfile
+    container_name: kubesage-platform
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: "8080"
+
+      KubeSage__Database__ConnectionString: "Host=postgres;Port=5432;Database=kubesage;Username=kubesage_app;Password=${KUBESAGE_APP_PASSWORD:-kubesage_app_local_dev};Include Error Detail=true"
+      # Schema creation runs as the owner role; normal operation does not.
+      KubeSage__Database__MigrationConnectionString: "Host=postgres;Port=5432;Database=kubesage;Username=kubesage_owner;Password=${POSTGRES_PASSWORD:-kubesage_local_dev}"
+
+      KubeSage__Ollama__Endpoint: "http://ollama:11434"
+      KubeSage__Ollama__ChatModel: "${KUBESAGE_CHAT_MODEL}"
+      KubeSage__Ollama__EmbeddingModel: "${KUBESAGE_EMBEDDING_MODEL}"
+
+      # Cluster-side dependencies, reached through the fixed Kind host ports.
+      KubeSage__Telemetry__LokiEndpoint: "http://host.docker.internal:${LOKI_HOST_PORT}"
+      KubeSage__Telemetry__PrometheusEndpoint: "http://host.docker.internal:${PROMETHEUS_HOST_PORT}"
+      KubeSage__Kubernetes__KubeConfigPath: "/etc/kubesage/kubeconfig.yaml"
+    ports:
+      - "${PLATFORM_HOST_PORT}:8080"
+    volumes:
+      # Read-only service-account kubeconfig generated during bootstrap.
+      # Mounted read-only so the platform cannot rewrite its own credentials.
+      - ./generated:/etc/kubesage:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+  # ---------------------------------------------------------------------
+  # Human observability interface. Grafana exists so a person can check the
+  # same Loki and Prometheus evidence the agents used, independently of any
+  # claim the AI made about it.
+  # ---------------------------------------------------------------------
+  grafana:
+    image: ${GRAFANA_IMAGE}
+    container_name: kubesage-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Datasource provisioning reads these, so the ports stay defined in
+      # exactly one place (versions.env).
+      LOKI_URL: "http://host.docker.internal:${LOKI_HOST_PORT}"
+      PROMETHEUS_URL: "http://host.docker.internal:${PROMETHEUS_HOST_PORT}"
+    ports:
+      - "${GRAFANA_HOST_PORT}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+
+volumes:
+  postgres-data:
+  ollama-models:
+  grafana-data:

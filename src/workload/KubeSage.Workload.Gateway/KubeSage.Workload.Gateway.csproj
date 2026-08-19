@@ -1,0 +1,14 @@
+<!--
+  Single entry point for the demo application; where customer-visible impact appears.
+
+  Shared behaviour (log format, correlation, faults, metrics, health probes)
+  comes from KubeSage.Workload.Shared so every service in the demo produces
+  the same shape of telemetry.
+-->
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <ProjectReference Include="..\KubeSage.Workload.Shared\KubeSage.Workload.Shared.csproj" />
+  </ItemGroup>
+
+</Project>

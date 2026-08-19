@@ -1,0 +1,18 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/KubeSage.Platform/KubeSage.Platform.csproj" />
+  </Folder>
+  <Folder Name="/src/workload/">
+    <Project Path="src/workload/KubeSage.Workload.Gateway/KubeSage.Workload.Gateway.csproj" />
+    <Project Path="src/workload/KubeSage.Workload.NotificationWorker/KubeSage.Workload.NotificationWorker.csproj" />
+    <Project Path="src/workload/KubeSage.Workload.OrderApi/KubeSage.Workload.OrderApi.csproj" />
+    <Project Path="src/workload/KubeSage.Workload.PaymentSimulator/KubeSage.Workload.PaymentSimulator.csproj" />
+    <Project Path="src/workload/KubeSage.Workload.Shared/KubeSage.Workload.Shared.csproj" />
+    <Project Path="src/workload/KubeSage.Workload.TrafficGenerator/KubeSage.Workload.TrafficGenerator.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/KubeSage.Platform.ApiTests/KubeSage.Platform.ApiTests.csproj" />
+    <Project Path="tests/KubeSage.Platform.IntegrationTests/KubeSage.Platform.IntegrationTests.csproj" />
+    <Project Path="tests/KubeSage.Platform.UnitTests/KubeSage.Platform.UnitTests.csproj" />
+  </Folder>
+</Solution>
